@@ -784,9 +784,9 @@ class UNetModel(nn.Module):
                 self._feature_size += ch
                 input_block_chans.append(ch)
 
-                # 只在 ds=4 和 ds=8 进行 PVT 融合
+                # ds=4: 融合 F1；ds=8: 先融合 F2 再融合 F3（列表顺序即执行顺序）
                 if self.use_pvt_fusion and block_idx == num_res_blocks - 1:
-                    fusion_map = {4: 0, 8: 1}   # F1 -> ds4, F2 -> ds8
+                    fusion_map = {4: [0], 8: [1, 2]}   # F1@ds4, [F2,F3]@ds8
                     if ds in fusion_map:
                         self.fusion_block_ids[len(self.input_blocks) - 1] = fusion_map[ds]
 
@@ -823,9 +823,10 @@ class UNetModel(nn.Module):
                 use_checkpoint=use_checkpoint,
                 use_scale_shift_norm=use_scale_shift_norm,
             )
+            # F4: 8×8=64 tokens, 256ch —— 全局语义引导
             self.middle_cross_attn = CrossAttentionBlock(
                 channels=ch,
-                context_channels=256,
+                context_channels=256,  # PVTv2-b0 stage3 输出通道
                 num_heads=num_heads,
                 use_checkpoint=use_checkpoint,
             )
@@ -966,17 +967,25 @@ class UNetModel(nn.Module):
             pvt_channels = self.pvt_extractor.get_pvt_channels()
             self.fusion_stage_channels = [model_channels * mult for mult in channel_mult]
 
-            # F1 -> ds4 (160 channels), F2 -> ds8 (256 channels)
+            # fusion_modules[0]: F1 -> ds4 (exact 64×64)
+            # fusion_modules[1]: F2 -> ds8 (exact 32×32)
+            # fusion_modules[2]: F3 -> ds8 (16×16 → 2× bilinear → 32×32)
             self.fusion_modules = nn.ModuleList([
                 GatedFusionModule(
                     pvt_channels=pvt_channels[0],
-                    unet_channels=self.fusion_stage_channels[2],  # 160
+                    unet_channels=self.fusion_stage_channels[2],
                     out_channels=self.fusion_stage_channels[2],
                     dims=dims,
                 ),
                 GatedFusionModule(
                     pvt_channels=pvt_channels[1],
-                    unet_channels=self.fusion_stage_channels[3],  # 256
+                    unet_channels=self.fusion_stage_channels[3],
+                    out_channels=self.fusion_stage_channels[3],
+                    dims=dims,
+                ),
+                GatedFusionModule(
+                    pvt_channels=pvt_channels[2],
+                    unet_channels=self.fusion_stage_channels[3],
                     out_channels=self.fusion_stage_channels[3],
                     dims=dims,
                 ),
@@ -1035,8 +1044,10 @@ class UNetModel(nn.Module):
 
             # input image assumed in [-1, 1]
             x_pvt = (x_pvt + 1.0) / 2.0
-            mean = th.tensor([0.485, 0.456, 0.406], device=x.device).view(1, 3, 1, 1)
-            std = th.tensor([0.229, 0.224, 0.225], device=x.device).view(1, 3, 1, 1)
+            # 灰度图重复3通道后三通道值相同，使用统一均值避免引入人为通道不对称
+            # 0.449 / 0.226 为 ImageNet RGB 统计量的灰度等效值
+            mean = th.tensor([0.449, 0.449, 0.449], device=x.device, dtype=x_pvt.dtype).view(1, 3, 1, 1)
+            std = th.tensor([0.226, 0.226, 0.226], device=x.device, dtype=x_pvt.dtype).view(1, 3, 1, 1)
             x_pvt = (x_pvt - mean) / std
 
             if not any(p.requires_grad for p in self.pvt_extractor.parameters()):
@@ -1051,15 +1062,15 @@ class UNetModel(nn.Module):
             h = module(h, emb)
 
             if pvt_feats is not None and block_id in self.fusion_block_ids:
-                fusion_idx = self.fusion_block_ids[block_id]
-                h = self.fusion_modules[fusion_idx](pvt_feats[fusion_idx], h)
+                for fusion_idx in self.fusion_block_ids[block_id]:
+                    h = self.fusion_modules[fusion_idx](pvt_feats[fusion_idx], h)
 
             hs.append(h)
 
         # middle
         if self.use_cross_attn:
             h = self.middle_block1(h, emb)
-            h = self.middle_cross_attn(h, pvt_feats[3])
+            h = self.middle_cross_attn(h, pvt_feats[3])  # F4: 8×8, 256ch
             h = self.middle_block2(h, emb)
         else:
             h = self.middle_block(h, emb)

@@ -277,6 +277,37 @@ class MyDataset(Dataset):
         img_tensor = img_tensor * 2.0 - 1.0                                  # [-1,1]
         return img_tensor
 
+    def _img_to_tensor_robust_0to1(self, img_pil):
+        """
+        PIL灰度图 -> robust normalize -> tensor，保留在 [0,1]（供后续增强使用）
+        """
+        img_np = np.array(img_pil, dtype=np.uint8)
+        img_np = robust_normalize_gray(img_np, lower_q=1.0, upper_q=99.0)
+        return torch.from_numpy(img_np).unsqueeze(0).float()                 # [1,H,W] in [0,1]
+
+    def _intensity_augment_tensor(self, img_tensor, p=0.5):
+        """
+        在归一化后的 [0,1] tensor 空间做轻量强度扰动，保证增强不被归一化抵消。
+        img_tensor: [1,H,W], float, in [0,1]
+        """
+        if random.random() > p:
+            return img_tensor
+
+        # brightness: 乘以系数
+        b = random.uniform(0.9, 1.1)
+        img_tensor = img_tensor * b
+
+        # contrast: 绕均值缩放
+        c = random.uniform(0.9, 1.1)
+        mean_val = img_tensor.mean()
+        img_tensor = (img_tensor - mean_val) * c + mean_val
+
+        # gamma: 幂次变换（仅在 [0,1] 空间有意义）
+        g = random.uniform(0.9, 1.1)
+        img_tensor = img_tensor.clamp(0.0, 1.0).pow(g)
+
+        return img_tensor.clamp(0.0, 1.0)
+
     def _mask_to_onehot(self, mask_pil):
         mask_tensor = torch.from_numpy(np.array(mask_pil)).long()            # [H,W]
         mask_onehot = F.one_hot(mask_tensor, num_classes=self.num_classes)
@@ -322,10 +353,11 @@ class MyDataset(Dataset):
 
                 img_full, mask_full = self._apply_basic_aug(img_full, mask_full)
 
-                # 训练时增加轻量灰度增强
-                img_full = random_intensity_augment(img_full, p=self.intensity_aug_p)
+                # 先归一化到 [0,1]，再做强度增强，避免 percentile clip 抵消增强效果
+                img_tensor = self._img_to_tensor_robust_0to1(img_full)
+                img_tensor = self._intensity_augment_tensor(img_tensor, p=self.intensity_aug_p)
+                img_tensor = img_tensor * 2.0 - 1.0                          # [-1,1]
 
-                img_tensor = self._img_to_tensor_with_robust_norm(img_full)
                 mask_onehot = self._mask_to_onehot(mask_full)
                 return img_tensor, mask_onehot, name
 
@@ -353,10 +385,11 @@ class MyDataset(Dataset):
 
                 img_patch, mask_patch = self._apply_basic_aug(img_patch, mask_patch)
 
-                # 训练时增加轻量灰度增强
-                img_patch = random_intensity_augment(img_patch, p=self.intensity_aug_p)
+                # 先归一化到 [0,1]，再做强度增强，避免 percentile clip 抵消增强效果
+                img_tensor = self._img_to_tensor_robust_0to1(img_patch)
+                img_tensor = self._intensity_augment_tensor(img_tensor, p=self.intensity_aug_p)
+                img_tensor = img_tensor * 2.0 - 1.0                          # [-1,1]
 
-                img_tensor = self._img_to_tensor_with_robust_norm(img_patch)
                 mask_onehot = self._mask_to_onehot(mask_patch)
                 return img_tensor, mask_onehot, name
 
