@@ -30,6 +30,47 @@ from timm.models.pvt_v2 import checkpoint_filter_fn
 
 NUM_CLASSES=3
 
+import torch as th
+import torch.nn.functional as F
+
+
+def multiclass_focal_loss(logits, target_onehot, alpha=None, gamma=2.0, eps=1e-6):
+    """
+    logits: [B,C,H,W]
+    target_onehot: [B,C,H,W]
+    alpha: list/tuple, e.g. [0.2, 1.8, 1.0]
+    """
+    probs = th.softmax(logits, dim=1).clamp(min=eps, max=1.0 - eps)
+    ce = -target_onehot * th.log(probs)              # [B,C,H,W]
+    mod = (1.0 - probs) ** gamma
+    loss = mod * ce
+
+    if alpha is not None:
+        alpha_t = th.tensor(alpha, device=logits.device, dtype=logits.dtype).view(1, -1, 1, 1)
+        loss = loss * alpha_t
+
+    return loss.sum(dim=1).mean()
+
+
+def presence_loss(logits, target_onehot, fg_ids=(1, 2), eps=1e-6):
+    # Penalize model for ignoring a fg class that exists in GT.
+    # Uses mean predicted prob at GT fg pixels (not whole image).
+    # Perfect prediction -> pred_at_fg ~1.0 -> loss ~0.
+    probs = th.softmax(logits, dim=1)
+    total_loss = 0.0
+    count = 0
+
+    for cid in fg_ids:
+        gt_mask = target_onehot[:, cid]                                        # [B, H, W]
+        gt_exist = (gt_mask.sum(dim=(1, 2)) > 0).float()                      # [B]
+        # 只在 GT 前景像素位置计算平均预测概率
+        pred_at_fg = (probs[:, cid] * gt_mask).sum(dim=(1, 2)) / (gt_mask.sum(dim=(1, 2)) + eps)  # [B]
+        cls_loss = -gt_exist * th.log(pred_at_fg + eps)
+        total_loss += cls_loss.mean()
+        count += 1
+
+    return total_loss / max(count, 1)
+
 # modify
 def multiclass_dice_loss(pred_probs, target_onehot, eps=1e-6):
     """
@@ -45,8 +86,12 @@ def multiclass_dice_loss(pred_probs, target_onehot, eps=1e-6):
     dims = (2, 3)  # 按 batch 和空间维度求和，保留通道维
     intersection = (pred_probs * target_onehot).sum(dim=dims)
     union = pred_probs.sum(dim=dims) + target_onehot.sum(dim=dims)
-    dice = (2.0 * intersection + eps) / (union + eps)
-    return 1.0 - dice.mean(dim=1)  # 返回平均 Dice 损失，形状为 [B]
+    dice = (2.0 * intersection + eps) / (union + eps)  # [B, 2]
+    # class_1 (small target) gets 2x weight vs class_2 (large target)
+    # equal weighting lets class_1 collapse unpenalized since its pixel count is tiny
+    weights = pred_probs.new_tensor([2.0, 1.0])  # [class_1, class_2]
+    dice_weighted = (dice * weights).sum(dim=1) / weights.sum()
+    return 1.0 - dice_weighted  # [B]
 
 # 对输入图像进行标准化处理，使其均值为 0，标准差为 1。
 def standardize(img):
@@ -661,7 +706,7 @@ class GaussianDiffusion:
         pred_logits_for_seg = pred_xstart.clamp(min=-4.0, max=4.0)
         pred_probs = th.softmax(pred_logits_for_seg, dim=1)
 
-        class_weights = pred_xstart.new_tensor([0.3, 1.0, 1.0])
+        class_weights = pred_xstart.new_tensor([0.3, 1.5, 1.0])
 
         seg_ce = F.cross_entropy(
             pred_logits_for_seg,
@@ -671,13 +716,47 @@ class GaussianDiffusion:
         ).mean(dim=(1, 2))
         seg_dice = multiclass_dice_loss(pred_probs, mask)
 
+        # -------------------------
+        # Focal
+        # multiclass_focal_loss 当前返回标量
+        # 为兼容现有 terms 结构，这里扩成 [B]
+        # -------------------------
+        seg_focal_scalar = multiclass_focal_loss(
+            pred_logits_for_seg,
+            mask,
+            alpha=[0.2, 1.8, 1.0],
+            gamma=2.0,
+        )
+        seg_focal = th.ones_like(seg_ce) * seg_focal_scalar   # [B]
+
+        # -------------------------
+        # Presence loss
+        # 避免 GT 中存在的类被整体忘掉
+        # 当前返回标量，扩成 [B]
+        # -------------------------
+        seg_presence_scalar = presence_loss(
+            pred_logits_for_seg,
+            mask,
+            fg_ids=(1,),  # class_1 only: small target that collapses; class_2 rarely disappears
+        )
+        seg_presence = th.ones_like(seg_ce) * seg_presence_scalar   # [B]
+
         terms["seg_ce"] = seg_ce
         terms["seg_dice"] = seg_dice
+        terms["seg_focal"] = seg_focal
+        terms["seg_presence"] = seg_presence
 
         lambda_seg = 0.75
-        seg_time_weight = 1.0 - t.float() / max(self.num_timesteps - 1, 1)
-        seg_time_weight = seg_time_weight.clamp(min=0.25)
-        seg_loss = seg_time_weight * (seg_ce + seg_dice)
+        # seg_time_weight = 1.0 - t.float() / max(self.num_timesteps - 1, 1)
+        seg_time_weight = 0.1 + 0.9 * (1.0 - t.float() / self.num_timesteps)
+        seg_time_weight = seg_time_weight.clamp(min=0.05)
+        seg_loss = seg_time_weight * (
+            seg_ce
+            + seg_dice
+            + 0.5 * seg_focal
+            + 0.1 * seg_presence
+        )
+
 
         if "vb" in terms:
             terms["loss"] = terms["mse"] + terms["vb"] + lambda_seg * seg_loss
