@@ -1,0 +1,210 @@
+================================================================================
+⚡ 实验参数快速查询表
+================================================================================
+
+基于 launch.json 的所有实验配置对比
+
+================================================================================
+📌 1. 训练实验核心参数对比
+================================================================================
+
+实验名称        | 脚本类型      | 学习率 | batch | 通道 | PVT | FEB | CrossAttn | PVT模式        | GPU
+----------------|---------------|--------|--------|------|-----|-----|-----------|-----------------|-----
+train_no        | 基础          | 5e-5   | 8      | 128  | ❌  | ❌  | ❌        | -               | 0
+train_pvt       | 融合          | 5e-5   | 8      | 32   | ✅  | ❌  | ❌        | frozen          | 3
+E1_frozen       | patchmix      | 5e-5   | 8      | 32   | ✅  | ✅  | ❌        | frozen          | 0
+E1.5_frozen_ca  | patchmix      | 5e-5   | 8      | 32   | ✅  | ✅  | ✅        | frozen          | 0
+E5_last_stage   | patchmix      | 2e-5   | 8      | 32   | ✅  | ✅  | ✅        | last_stage      | 3
+E6_last_2stage  | patchmix      | 2e-5   | 8      | 32   | ✅  | ✅  | ✅        | last_two_stages | 5
+
+================================================================================
+📌 2. 数据增强参数对比
+================================================================================
+
+实验          | 使用patchmix | 长边 | 每图patch | 前景比例 | 完整比例 | 强度增强
+--------------|-------------|------|-----------|---------|---------|----------
+train_no      | ❌          | -    | -         | -       | -       | -
+train_pvt     | ❌          | -    | -         | -       | -       | -
+E1-E6         | ✅          | 640  | 6         | 0.6     | 0.6     | 0.4
+
+================================================================================
+📌 3. 采样实验对比 (Window-based)
+================================================================================
+
+实验              | 训练模型      | 全局采样 | 局部采样 | 全局ens | 局部ens | 融合权重 | 测试长边 | 步幅
+------------------|--------------|---------|---------|---------|---------|---------|---------|-------
+E2_global_only    | E1@25000     | ✅      | ❌      | 4       | -       | -       | -       | -
+E2.5_global_ca    | E1.5@30000   | ✅      | ❌      | 4       | -       | -       | -       | -
+E3_local_window   | E1@25000     | ❌      | ✅      | -       | 1       | -       | 640     | 128
+E4_global_local   | E1@25000     | ✅      | ✅      | 4       | 1       | 0.4     | 640     | 128
+
+================================================================================
+📌 4. 简单采样脚本对比
+================================================================================
+
+实验           | 训练模型      | PVT | FEB | CrossAttn | Ensemble
+---------------|--------------|-----|-----|-----------|----------
+sample_pvt     | pvt@40000    | ✅  | ❌  | ❌        | 4
+sample_feb     | feb@40000    | ❌  | ✅  | ❌        | 4
+sample_pvt_feb | pvt+feb@30k  | ✅  | ✅  | ❌        | 1
+
+================================================================================
+🔑 关键参数解释
+================================================================================
+
+学习率 (lr):
+  5e-5   - 标准学习率（用于frozen和初始阶段）
+  2e-5   - 降低学习率（用于PVT微调时）
+
+batch_size:
+  固定为8（所有实验）
+
+num_channels:
+  128    - train_no (全尺寸模型)
+  32     - 其他所有（轻量级，用于PVT融合）
+
+PVT融合 (use_pvt_fusion):
+  False  - 不使用PVT特征
+  True   - 使用Pyramid Vision Transformer特征
+
+FEB (use_feb):
+  False  - 不使用Feature Enhancement Branch
+  True   - 启用特征增强分支
+
+CrossAttn (use_cross_attn):
+  False  - 不使用交叉注意力
+  True   - 启用UNet与PVT之间的交叉注意力机制
+
+PVT训练模式 (pvt_train_mode):
+  frozen          - PVT参数完全冻结
+  last_stage      - 仅训练PVT最后一个阶段
+  last_two_stages - 训练PVT最后两个阶段
+
+Patch-Mix参数:
+  train_long_side    = 640    - 原始数据长边缩放到640
+  patches_per_image  = 6      - 每张原始图切成6个patch
+  fg_sample_ratio    = 0.6    - 60%的patch包含前景
+  min_fg_pixels      = 32     - 前景最少32像素
+  full_image_ratio   = 0.6    - 60%概率保留完整图像
+  intensity_aug_p    = 0.4    - 40%概率进行强度增强
+
+采样方法:
+  Global Only       - 整张图采样（E2, E2.5）
+  Local Window      - 640x640的滑窗采样（E3）
+  Global+Local      - 全局和局部融合（E4, fusion_alpha=0.4）
+
+================================================================================
+💡 推荐实验设计流程
+================================================================================
+
+Step 1: Baseline (推荐使用train_pvt或E1配置)
+  python scripts_new/segmentation_train_gate_v4.py \
+      --lr 5e-5 --batch_size 8 --use_adapter --use_edge_branch
+
+Step 2: 尝试高级损失函数
+  添加: --use_edge_loss --use_sdf_loss --use_hd_loss
+
+Step 3: 尝试融合策略
+  修改: --fusion_version v1/v2
+
+Step 4: 尝试PVT微调 (基于E5/E6)
+  修改: --freeze_pvt False (需要降低学习率到2e-5)
+
+Step 5: 复杂采样
+  python scripts_new/segmentation_sample_gate_v4.py \
+      --num_ensemble 5 --save_vis
+
+================================================================================
+📊 实验进展关键指标追踪
+================================================================================
+
+关键检查点:
+  ✓ 25000步   - E1标准checkpoint (E2, E3, E4采样点)
+  ✓ 30000步   - E1.5标准checkpoint (E2.5采样点)
+  ✓ 40000步   - 简单采样标准点 (sample_*)
+
+指标跟踪:
+  - Dice分数 (主要指标)
+  - IoU (交集/并集)
+  - Hausdorff Distance (HD95)
+  - Average Surface Distance (ASD)
+
+================================================================================
+🎯 快速命令参考
+================================================================================
+
+对标E1的v4训练:
+  python scripts_new/segmentation_train_gate_v4.py \
+      --data_dir ./data/mydata \
+      --out_dir ./results/train/e1_v4 \
+      --lr 5e-5 \
+      --batch_size 8 \
+      --use_adapter \
+      --use_edge_branch \
+      --use_edge_loss
+
+对标E5的v4训练 (PVT微调):
+  python scripts_new/segmentation_train_gate_v4.py \
+      --data_dir ./data/mydata \
+      --out_dir ./results/train/e5_v4 \
+      --lr 2e-5 \
+      --batch_size 8 \
+      --use_adapter \
+      --use_edge_branch \
+      --use_edge_loss \
+      --use_sdf_loss \
+      --use_hd_loss \
+      --freeze_pvt False
+
+v4采样（对标E2-E4）:
+  python scripts_new/segmentation_sample_gate_v4.py \
+      --model_path ./results/train/e1_v4/model_best.pt \
+      --data_dir ./data/mydata \
+      --out_dir ./results/sample/e1_v4 \
+      --num_ensemble 4 \
+      --save_vis
+
+================================================================================
+⚙️ 原launch.json设置详细参数转换为v4
+================================================================================
+
+如果要使用v4脚本复现原launch.json的实验，参考下表:
+
+原launch.json参数          ➜ v4脚本对应参数
+--num_channels 128         ➜ 不改(v4默认128或自定义)
+--num_channels 32          ➜ --num_channels 32
+--attention_resolutions 16,8 ➜ --attention_resolutions 16,8
+--channel_mult 1,2,5,8     ➜ --channel_mult 1,2,5,8
+--use_scale_shift_norm True ➜ --use_scale_shift_norm
+--use_pvt_fusion True      ➜ --use_pvt_fusion
+--use_feb True             ➜ (v4中通过fusion_modules实现)
+--use_cross_attn True      ➜ --use_cross_attn
+--freeze_pvt False         ➜ --freeze_pvt False
+--weight_decay 1e-4        ➜ --weight_decay 1e-4
+--lr 2e-5                  ➜ --lr 2e-5
+
+================================================================================
+✅ 验证清单
+================================================================================
+
+启动训练前检查:
+  ☐ 数据目录 ./data/mydata 存在
+  ☐ train_data/, train_mask/ 目录存在
+  ☐ 输出目录 ./results/train/ 可写
+  ☐ GPU显存充足 (8G+)
+  ☐ batch_size 根据GPU显存调整
+
+采样前检查:
+  ☐ 模型文件 model_best.pt 存在
+  ☐ 输出目录 ./results/sample/ 可写
+  ☐ 测试集数据完整
+
+================================================================================
+📚 更多信息见
+================================================================================
+
+- EXPERIMENT_PARAMETERS.md    (详细参数说明)
+- QUICK_START_REFACTORED.md   (v4脚本使用指南)
+- REFACTORING_SUMMARY.md      (重构详情)
+
+================================================================================

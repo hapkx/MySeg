@@ -1,0 +1,262 @@
+================================================================================
+V4 实验参数快速查询表 - 全新设计（无E1-E6标记）
+================================================================================
+
+基于全新V4脚本的完整实验配置
+
+================================================================================
+🎯 实验分组概览
+================================================================================
+
+Group 1: Core Baselines (4个实验)
+  - baseline_v4:           纯UNet，不含PVT
+  - pvt_frozen_v4:         PVT冻结，无Adapter
+  - adapter_frozen_v4:     PVT冻结，启用Adapter
+  - pvt_unfrozen_v4:       PVT完全可训练，无Adapter
+
+Group 2: Supervision Enhancements (3个实验)
+  - edge_branch_v4:        边缘分支 + edge_loss
+  - multi_loss_v4:         多个loss函数组合
+  - loss_weighted_v4:      调整loss权重
+
+Group 3: Fusion Strategies (3个实验)
+  - fusion_v1_adaptive_v4: Adaptive weights融合
+  - fusion_v2_attention_v4: Cross-attention融合
+  - fusion_combined_v4:    融合 + 边缘监督
+
+Group 4: Learning Rate Tuning (2个实验)
+  - adapter_lr_tuned_v4:   adapter_lr=5e-5
+  - adapter_lr_high_v4:    adapter_lr=5e-4
+
+Group 5: Complete Configurations (3个实验)
+  - complete_balanced_v4:  平衡配置
+  - complete_aggressive_v4: 激进配置（PVT可训练）
+  - complete_lite_v4:      轻量配置
+
+================================================================================
+📌 GROUP 1: Core Baseline Experiments
+================================================================================
+
+实验名称        | lr    | PVT融合 | PVT冻结 | Adapter | Edge分支 | 期望改进
+----------------|-------|---------|---------|---------|----------|----------
+baseline_v4     | 5e-5  | ❌      | -       | ❌      | ❌       | 0% (baseline)
+pvt_frozen_v4   | 5e-5  | ✅      | ✅      | ❌      | ❌       | +2-3%
+adapter_frozen  | 5e-5  | ✅      | ✅      | ✅      | ❌       | +1-2%
+pvt_unfrozen    | 2e-5  | ✅      | ❌      | ❌      | ❌       | +3-5%
+
+================================================================================
+📌 GROUP 2: Supervision Enhancement
+================================================================================
+
+实验名称        | 边缘Loss | SDF Loss | HD Loss | Edge Loss权重 | 期望改进
+----------------|----------|----------|---------|----------------|---------
+edge_branch_v4  | ✅       | ❌       | ❌      | 0.2           | +1-2%
+multi_loss_v4   | ✅       | ✅       | ✅      | 0.2/0.2/0.1   | +2-3%
+loss_weighted   | ✅       | ✅       | ✅      | 0.3/0.3/0.15  | +1-2%
+
+================================================================================
+📌 GROUP 3: Fusion Strategies
+================================================================================
+
+实验名称           | Fusion版本 | Cross-Attn | Edge分支 | 期望改进
+-------------------|-----------|-----------|---------|----------
+fusion_v1_adaptive | v1        | ❌        | ❌      | +0.5-1%
+fusion_v2_attention| v2        | ✅        | ❌      | +0.5-1.5%
+fusion_combined    | v2        | ✅        | ✅      | +1-2%
+
+================================================================================
+📌 GROUP 4: Learning Rate Tuning
+================================================================================
+
+实验名称          | 基础LR | Adapter LR | 期望改进
+--|---|-------|----------
+adapter_lr_tuned  | 5e-5   | 5e-5      | +0.5% (降低)
+adapter_lr_high   | 5e-5   | 5e-4      | -0.5% (测试上界)
+
+================================================================================
+📌 GROUP 5: Complete Configurations
+================================================================================
+
+实验名称           | PVT冻结 | Adapter | Edge | FEB | CrossAttn | Fusion | 期望改进
+------------------|--------|---------|------|-----|-----------|--------|----------
+complete_balanced  | ✅     | ✅      | ✅   | ✅  | ✅        | v2     | +4-6%
+complete_aggressive| ❌     | ✅      | ✅   | ✅  | ✅        | v2     | +5-8%
+complete_lite      | ✅     | ❌      | ✅   | ✅  | ❌        | None   | +2-3%
+
+================================================================================
+🔑 关键参数说明
+================================================================================
+
+学习率 (lr):
+  5e-5   - 标准学习率（用于frozen配置）
+  2e-5   - 降低学习率（用于PVT微调，防止catastrophic forgetting）
+
+Adapter学习率 (adapter_lr):
+  1e-4   - 标准值
+  5e-5   - 降低值（更温和的参数更新）
+  5e-4   - 提高值（更激进的参数更新，可能过度）
+
+batch_size:
+  固定为8（所有实验）
+
+num_channels:
+  128 - 所有实验（标准通道数）
+
+image_size:
+  256 - 标准尺寸（v4数据预处理）
+
+PVT融合 (use_pvt_fusion):
+  False - 不使用PVT特征
+  True  - 使用Pyramid Vision Transformer特征
+
+PVT冻结 (freeze_pvt):
+  True  - PVT参数完全冻结（仅使用预训练特征）
+  False - PVT参数完全可训练（需要降低学习率）
+
+Adapter (use_adapter):
+  False - 不使用参数高效微调
+  True  - 启用PVT Adapter（参数量减少，学习率独立控制）
+
+Edge分支 (use_edge_branch):
+  False - 不使用边缘分支（3通道输出）
+  True  - 启用边缘分支（4通道输出：3分割+1边缘）
+
+FEB (use_feb):
+  False - 不使用特征增强模块
+  True  - 启用Feature Enhancement Branch
+
+CrossAttn (use_cross_attn):
+  False - 不使用交叉注意力
+  True  - 启用UNet与PVT之间的交叉注意力
+
+Fusion版本 (fusion_version):
+  None  - 使用标准的门控融合（如果use_pvt_fusion=True）
+  'v1'  - 自适应权重融合（per-scale adaptive weights）
+  'v2'  - 交叉分支注意力融合（multi-head attention）
+
+Loss函数：
+  use_edge_loss:  边缘监督loss，权重0.2-0.3
+  use_sdf_loss:   距离场loss，权重0.2-0.3
+  use_hd_loss:    Hausdorff距离loss，权重0.1-0.15
+
+================================================================================
+🚀 快速命令参考
+================================================================================
+
+1. Baseline (最简单):
+   python scripts_new/segmentation_train_gate_v4.py \
+       --data_dir ./data/mydata \
+       --out_dir ./results/train/v4_baseline \
+       --batch_size 8 --lr 5e-5
+
+2. PVT Frozen (标准推荐):
+   python scripts_new/segmentation_train_gate_v4.py \
+       --data_dir ./data/mydata \
+       --out_dir ./results/train/v4_pvt_frozen \
+       --batch_size 8 --lr 5e-5 \
+       --use_pvt_fusion True --freeze_pvt True --use_feb True
+
+3. Adapter (参数高效):
+   python scripts_new/segmentation_train_gate_v4.py \
+       --data_dir ./data/mydata \
+       --out_dir ./results/train/v4_adapter \
+       --batch_size 8 --lr 5e-5 --adapter_lr 1e-4 \
+       --use_pvt_fusion True --use_adapter True
+
+4. 多Loss (全功能):
+   python scripts_new/segmentation_train_gate_v4.py \
+       --data_dir ./data/mydata \
+       --out_dir ./results/train/v4_multi_loss \
+       --batch_size 8 --lr 5e-5 \
+       --use_edge_branch True \
+       --use_edge_loss True --edge_loss_weight 0.2 \
+       --use_sdf_loss True --sdf_loss_weight 0.2 \
+       --use_hd_loss True --hd_loss_weight 0.1
+
+5. 完整配置 (平衡):
+   python scripts_new/segmentation_train_gate_v4.py \
+       --data_dir ./data/mydata \
+       --out_dir ./results/train/v4_complete_balanced \
+       --batch_size 8 --lr 5e-5 --adapter_lr 1e-4 \
+       --use_pvt_fusion True --freeze_pvt True --use_feb True \
+       --use_cross_attn True \
+       --use_adapter True --adapter_reduction 16 \
+       --use_edge_branch True --fusion_version v2 \
+       --use_edge_loss True --edge_loss_weight 0.2 \
+       --use_sdf_loss True --sdf_loss_weight 0.2 \
+       --use_hd_loss True --hd_loss_weight 0.1
+
+6. 采样和评估:
+   python scripts_new/segmentation_sample_gate_v4.py \
+       --model_path ./results/train/{exp_name}/model_best.pt \
+       --data_dir ./data/mydata \
+       --out_dir ./results/sample/{exp_name} \
+       --num_ensemble 5 --save_vis
+
+================================================================================
+📊 实验执行建议
+================================================================================
+
+优先级顺序（推荐执行顺序）：
+
+第1阶段（基础验证）：
+  1. baseline_v4         - 建立baseline
+  2. pvt_frozen_v4       - 验证PVT有效性
+
+第2阶段（监督增强）：
+  3. edge_branch_v4      - 测试边缘分支
+  4. multi_loss_v4       - 测试多loss组合
+
+第3阶段（融合策略）：
+  5. fusion_v2_attention_v4  - 最有希望的融合方案
+  6. fusion_combined_v4      - 融合 + 监督组合
+
+第4阶段（优化）：
+  7. complete_balanced_v4    - 平衡配置
+  8. complete_aggressive_v4  - 激进配置（如果时间允许）
+
+备选实验：
+  - adapter_frozen_v4        - 如果想测试参数效率
+  - pvt_unfrozen_v4          - 如果有足够的GPU时间和数据
+
+================================================================================
+⚙️ 参数对标指南
+================================================================================
+
+如果使用旧脚本的参数，转换为V4:
+
+原参数              ➜ V4对应参数
+num_channels 128    ➜ --num_channels 128
+num_channels 32     ➜ --num_channels 32
+attention_res 16,8  ➜ --attention_resolutions "16,8"
+use_pvt_fusion True ➜ --use_pvt_fusion True
+freeze_pvt True     ➜ --freeze_pvt True
+use_feb True        ➜ 暂无（v4未完全支持，使用fusion_version=v1/v2）
+
+================================================================================
+✅ 验证清单
+================================================================================
+
+启动训练前检查:
+  ☐ 数据目录 ./data/mydata 存在且正确
+  ☐ train_data/, train_mask/ 目录有文件
+  ☐ 输出目录 ./results/train/ 可写
+  ☐ GPU显存充足 (8G+)
+  ☐ Python环境已激活
+  ☐ 使用的是 scripts_new/ 中的V4脚本
+
+采样前检查:
+  ☐ 模型文件 model_best.pt 存在
+  ☐ 输出目录 ./results/sample/ 可写
+  ☐ 测试集数据完整
+
+================================================================================
+📚 相关文档
+================================================================================
+
+- V4_EXPERIMENTS_DESIGN.md        - 详细实验设计说明
+- QUICK_START_REFACTORED.md       - V4脚本使用指南
+- script_util_v4.py              - 参数定义和模型创建
+- train_util_v4.py               - 训练循环实现
+
+================================================================================
